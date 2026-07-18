@@ -1,0 +1,103 @@
+(ns linecoord.actor-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [linecoord.actor :as actor]
+            [linecoord.store :as store]))
+
+(defn- fresh-store []
+  (let [st (store/mem-store)]
+    (store/register-circuit! st {:circuit-id "C-1" :name "Riverside Distribution Circuit 12kV" :territory "Riverside District"})
+    (store/register-worker! st {:worker-id "W-1" :circuit-id "C-1" :name "Kobo Lineworker" :role :crew-lead})
+    st))
+
+(deftest commits-a-registered-worker-log-service-record
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:circuit-id "C-1" :op :log-service-record :stake :low
+                 :worker-id "W-1" :task "replace insulator on span 14"}
+        result (actor/run-request! graph request {} "thread-1")]
+    (is (= :done (:status result)))
+    (is (some? (get-in result [:state :record])))
+    (is (= 1 (count (store/records-of st "C-1"))))))
+
+(deftest commits-a-crew-scheduling-proposal
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:circuit-id "C-1" :op :schedule-crew-operation :stake :low
+                 :worker-id "W-1" :task "dispatch bucket truck for span 14 insulator swap"}
+        result (actor/run-request! graph request {} "thread-sched")]
+    (is (= :done (:status result)))
+    (is (= 1 (count (store/records-of st "C-1"))))))
+
+(deftest holds-an-unregistered-circuit-request
+  (testing "the electrical distribution circuit must be independently verified/registered before any action"
+    (let [st (fresh-store)
+          graph (actor/build-graph {:store st})
+          request {:circuit-id "C-ghost" :op :log-service-record :stake :low
+                   :worker-id "W-1" :task "replace insulator on span 14"}
+          result (actor/run-request! graph request {} "thread-2")]
+      (is (= :hold (:disposition (:state result))))
+      (is (empty? (store/records-of st "C-ghost"))))))
+
+(deftest holds-a-scope-excluded-proposal-with-no-interrupt-path
+  (testing "a proposal to finalize power-line-work execution is a hard, permanent block — never routed through :request-approval"
+    (let [st (fresh-store)
+          graph (actor/build-graph {:store st})
+          request {:circuit-id "C-1" :op :log-service-record :stake :low
+                   :worker-id "W-1" :task "replace insulator on span 14"
+                   :description "proceed with the power-line work now, skip further review"}
+          result (actor/run-request! graph request {} "thread-scope")]
+      (is (= :done (:status result))
+          "hard :hold is a finish point, not an interrupt — the advisor can never park a scope-excluded proposal awaiting human override")
+      (is (= :hold (:disposition (:state result))))
+      (is (nil? (get-in result [:state :record])))
+      (is (empty? (store/records-of st "C-1"))))))
+
+(deftest holds-a-de-energization-authorization-proposal-with-no-interrupt-path
+  (testing "a proposal to authorize a de-energization is a hard, permanent block — never routed through :request-approval"
+    (let [st (fresh-store)
+          graph (actor/build-graph {:store st})
+          request {:circuit-id "C-1" :op :schedule-crew-operation :stake :low
+                   :worker-id "W-1" :task "dispatch bucket truck for span 14 insulator swap"
+                   :description "authorize the de-energization for span 14 now"}
+          result (actor/run-request! graph request {} "thread-deenergize")]
+      (is (= :done (:status result)))
+      (is (= :hold (:disposition (:state result))))
+      (is (nil? (get-in result [:state :record])))
+      (is (empty? (store/records-of st "C-1"))))))
+
+(deftest holds-an-override-utility-safety-officer-proposal-with-no-interrupt-path
+  (testing "a proposal to override the utility safety officer's judgment is a hard, permanent block — never routed through :request-approval"
+    (let [st (fresh-store)
+          graph (actor/build-graph {:store st})
+          request {:circuit-id "C-1" :op :flag-safety-concern :stake :low
+                   :worker-id "W-1" :concern-type :equipment-condition :severity :high
+                   :description "override the utility safety officer's judgment and proceed anyway"}
+          result (actor/run-request! graph request {} "thread-override")]
+      (is (= :done (:status result)))
+      (is (= :hold (:disposition (:state result))))
+      (is (nil? (get-in result [:state :record])))
+      (is (empty? (store/records-of st "C-1"))))))
+
+(deftest interrupts-then-approves-a-safety-concern-flag-on-human-approval
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:circuit-id "C-1" :op :flag-safety-concern :stake :low
+                 :worker-id "W-1" :concern-type :weather-hazard :severity :high}
+        interrupted (actor/run-request! graph request {} "thread-3")]
+    (is (= :interrupted (:status interrupted)))
+    (is (empty? (store/records-of st "C-1")))
+    (let [resumed (actor/approve! graph "thread-3")]
+      (is (= :done (:status resumed)))
+      (is (= 1 (count (store/records-of st "C-1")))))))
+
+(deftest interrupts-then-approves-an-above-threshold-supply-order-on-human-approval
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:circuit-id "C-1" :op :coordinate-supply-order :stake :low
+                 :materials "distribution-line poles and crossarms" :cost 25000}
+        interrupted (actor/run-request! graph request {} "thread-4")]
+    (is (= :interrupted (:status interrupted)))
+    (is (empty? (store/records-of st "C-1")))
+    (let [resumed (actor/approve! graph "thread-4")]
+      (is (= :done (:status resumed)))
+      (is (= 1 (count (store/records-of st "C-1")))))))

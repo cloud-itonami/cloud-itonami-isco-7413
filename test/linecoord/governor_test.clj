@@ -1,0 +1,186 @@
+(ns linecoord.governor-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [linecoord.store :as store]
+            [linecoord.advisor :as advisor]
+            [linecoord.governor :as governor]))
+
+(defn- fresh-store []
+  (let [st (store/mem-store)]
+    (store/register-circuit! st {:circuit-id "C-1" :name "Riverside Distribution Circuit 12kV" :territory "Riverside District"})
+    (store/register-worker! st {:worker-id "W-1" :circuit-id "C-1" :name "Kobo Lineworker" :role :crew-lead})
+    st))
+
+(def ^:private req {:circuit-id "C-1"})
+
+(defn- log-op []
+  {:op :log-service-record :effect :propose :circuit-id "C-1" :worker-id "W-1"
+   :task "replace insulator on span 14" :confidence 0.9 :stake :low
+   :rationale "proposed log-service-record for circuit C-1"})
+
+(defn- schedule-op []
+  {:op :schedule-crew-operation :effect :propose :circuit-id "C-1" :worker-id "W-1"
+   :task "dispatch bucket truck for span 14 insulator swap" :confidence 0.9 :stake :low
+   :rationale "proposed schedule-crew-operation for circuit C-1"})
+
+(defn- safety-op []
+  {:op :flag-safety-concern :effect :propose :circuit-id "C-1" :worker-id "W-1"
+   :concern-type :weather-hazard :severity :high :confidence 0.9 :stake :low
+   :rationale "proposed flag-safety-concern for circuit C-1"})
+
+(defn- supply-op [cost]
+  {:op :coordinate-supply-order :effect :propose :circuit-id "C-1"
+   :materials "distribution-line poles and crossarms" :cost cost :confidence 0.9 :stake :low
+   :rationale "proposed coordinate-supply-order for circuit C-1"})
+
+(deftest ok-log-service-record-for-registered-circuit-and-worker
+  (let [st (fresh-store)
+        v (governor/check req {} (log-op) st)]
+    (is (:ok? v))))
+
+(deftest ok-schedule-crew-operation-for-registered-worker
+  (let [st (fresh-store)
+        v (governor/check req {} (schedule-op) st)]
+    (is (:ok? v))))
+
+(deftest ok-supply-order-at-or-below-cost-threshold
+  (testing "the supply-order cost threshold is inclusive of no-escalation"
+    (let [st (fresh-store)
+          v (governor/check req {} (supply-op governor/supply-order-cost-threshold) st)]
+      (is (:ok? v))
+      (is (not (:escalate? v))))))
+
+(deftest hard-on-unregistered-circuit
+  (let [st (fresh-store)
+        v (governor/check {:circuit-id "C-ghost"} {} (assoc (log-op) :circuit-id "C-ghost") st)]
+    (is (:hard? v))
+    (is (some #(= :no-circuit (:rule %)) (:violations v)))))
+
+(deftest hard-on-no-actuation-violation
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (log-op) :effect :direct-write) st)]
+    (is (:hard? v))
+    (is (some #(= :no-actuation (:rule %)) (:violations v)))))
+
+(deftest hard-on-unknown-op
+  (testing "closed op-allowlist enforced — no op finalizes power-line-work execution, authorizes a de-energization/re-energization/lockout clearance, or overrides safety authority"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (log-op) :op :finalize-power-line-work-execution) st)]
+      (is (:hard? v))
+      (is (some #(= :unknown-op (:rule %)) (:violations v))))))
+
+(deftest hard-on-circuit-mismatch
+  (let [st (fresh-store)]
+    (store/register-circuit! st {:circuit-id "C-2" :name "Other Circuit" :territory "Other District"})
+    (let [v (governor/check req {} (assoc (log-op) :circuit-id "C-2") st)]
+      (is (:hard? v))
+      (is (some #(= :circuit-mismatch (:rule %)) (:violations v))))))
+
+(deftest hard-on-unknown-worker
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (log-op) :worker-id "W-ghost") st)]
+    (is (:hard? v))
+    (is (some #(= :unknown-worker (:rule %)) (:violations v)))))
+
+(deftest hard-on-worker-wrong-circuit
+  (let [st (fresh-store)]
+    (store/register-circuit! st {:circuit-id "C-2" :name "Other Circuit" :territory "Other District"})
+    (store/register-worker! st {:worker-id "W-2" :circuit-id "C-2" :name "Other Worker" :role :crew})
+    (let [v (governor/check req {} (assoc (log-op) :worker-id "W-2") st)]
+      (is (:hard? v))
+      (is (some #(= :worker-wrong-circuit (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-finalize-power-line-work
+  (testing "a proposal to directly finalize a power-line-work-execution decision is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (log-op)
+                                          :confidence 0.99
+                                          :rationale "proceed with the power-line work now, skip further review")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)) "hard violations are never merely escalated — no human-approval override path")
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-authorize-de-energization
+  (testing "a proposal to authorize a de-energization is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (schedule-op)
+                                          :confidence 0.99
+                                          :rationale "authorize the de-energization for span 14 now")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-authorize-re-energization
+  (testing "a proposal to authorize a re-energization is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (schedule-op)
+                                          :confidence 0.99
+                                          :rationale "authorize the re-energization for span 14 now")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-lockout-clearance
+  (testing "a proposal to authorize a lockout clearance is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (schedule-op)
+                                          :confidence 0.99
+                                          :rationale "authorize the lockout clearance for span 14 now")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-override-safety-officer
+  (testing "a proposal to override a utility safety officer's judgment is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (safety-op)
+                                          :confidence 0.99
+                                          :rationale "override the utility safety officer's judgment and proceed anyway")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest scope-exclusion-not-triggered-by-bare-domain-nouns
+  (testing "bare nouns like 'power line'/'voltage'/'energized'/'pole'/'transformer' are ordinary domain vocabulary, not finalization/override actions"
+    (let [proposal {:rationale "proposed schedule-crew-operation for high-voltage power-line circuit C-1 near an energized transformer"
+                     :description "crew fully trained on live-line procedures and de-energization protocol for this pole/crossarm replacement"}]
+      (is (not (governor/scope-exclusion-violation? proposal))))))
+
+(deftest default-mock-advisor-proposals-never-self-trip-scope-exclusion
+  (testing "the mock advisor's own default rationale text, across every allowlisted op, never trips the scope-exclusion guard"
+    (let [st (fresh-store)
+          adv (advisor/mock-advisor)
+          requests [{:circuit-id "C-1" :op :log-service-record :worker-id "W-1" :task "replace insulator on span 14"}
+                    {:circuit-id "C-1" :op :schedule-crew-operation :worker-id "W-1" :task "dispatch bucket truck for span 14 insulator swap"}
+                    {:circuit-id "C-1" :op :flag-safety-concern :worker-id "W-1"
+                     :concern-type :weather-hazard :severity :high
+                     :description "high winds forecast near an energized 12kV span at height, unsecured equipment near the pole line"}
+                    {:circuit-id "C-1" :op :coordinate-supply-order :materials "distribution-line poles, crossarms and insulators"
+                     :cost 4500}]]
+      (doseq [request requests]
+        (let [proposal (advisor/-advise adv st request)]
+          (is (not (governor/scope-exclusion-violation? proposal))
+              (str "self-tripped on default rationale for " (:op request) ": " (pr-str proposal))))))))
+
+(deftest always-escalates-flag-safety-concern-even-at-high-confidence
+  (testing "a surfaced weather-hazard/equipment-condition/outage-report concern always requires human review"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (safety-op) :confidence 0.99) st)]
+      (is (not (:hard? v)))
+      (is (:escalate? v)))))
+
+(deftest always-escalates-supply-order-above-cost-threshold-even-at-high-confidence
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (supply-op (+ 1 governor/supply-order-cost-threshold)) :confidence 0.99) st)]
+    (is (not (:hard? v)))
+    (is (:escalate? v))))
+
+(deftest escalates-low-confidence
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (log-op) :confidence 0.3) st)]
+    (is (not (:hard? v)))
+    (is (:escalate? v))))
