@@ -80,7 +80,7 @@
                                  `supply-order-cost-threshold` always
                                  escalates.
     9. low confidence (< `confidence-floor`)."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [linecoord.store :as store]))
 
 (def confidence-floor 0.6)
@@ -126,7 +126,7 @@
    "bypass lockout clearance"])
 
 (defn- scope-excluded-text [proposal]
-  (str/lower-case (str (:rationale proposal) " " (:description proposal))))
+  (str/lower (str (:rationale proposal) " " (:description proposal))))
 
 (defn scope-exclusion-violation?
   "true if any free-text field of `proposal` contains a
