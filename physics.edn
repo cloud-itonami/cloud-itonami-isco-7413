@@ -1,0 +1,44 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:physics` runs it.
+;;
+;; README "Robotics premise": a crew dispatch scheduling/logistics
+;; coordination robot handles service records, crew/dispatch schedules,
+;; safety-concern surfacing and line/pole-materials orders for electrical line
+;; installers and repairers (ISCO 7413). Its physical work: hauling pole
+;; hardware up the access track to the work site, lifting an insulator to the
+;; crossarm, and the pull check of an aluminium conductor before stringing.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isco-7413"
+ :cases
+ [{:id :hardware-up-access-track
+   :kind :transport
+   :procedure "tracked carrier hauls crossarms, insulators and hardware up the access track to the pole"
+   :params {:mass-kg 250.0 :payload-kg 200.0 :distance-m 100.0 :v-max-mps 1.2 :a-max-mps2 0.4
+            :brake-decel-mps2 0.6 :drive-force-n 1500.0 :crr 0.08
+            :cog-height-m 0.50 :support-half-length-m 0.55 :payload-cog-height-m 0.90
+            :max-time-s 1800.0}
+   :sweep {:param :slope-deg :values [0.0 5.0 10.0 15.0 20.0]}
+   :quantity :cycle-time-s
+   :limit {:max 120.0 :basis "estimate: one track leg while the line crew sets up; crr 0.08 assumes a soft unpaved track"}
+   :boundary {:lo 0.0 :hi 30.0}}
+  {:id :insulator-to-crossarm
+   :kind :manipulator
+   :procedure "boom-mounted arm lifts a line insulator from the bucket tray up to the crossarm pin"
+   :params {:l1-m 0.60 :l2-m 0.50 :m1-kg 8.0 :m2-kg 6.0
+            :from [0.50 0.00] :to [0.40 0.90] :duration-s 3.0 :steps 500}
+   :sweep {:param :payload-kg :values [2.0 5.0 8.0 12.0 18.0]}
+   :quantity :peak-tau1-nm
+   :limit {:max 150.0 :basis "estimate: continuous shoulder torque of a 10 kg-payload class arm at ~1.1 m reach"}
+   :boundary {:lo 0.5 :hi 50.0}}
+  {:id :conductor-pull-check
+   :kind :material
+   :procedure "pull check of a 100 mm2 all-aluminium conductor sample above its stringing tension"
+   :params {:length-m 1.0 :area-m2 1.0e-4 :youngs-modulus-pa 69.0e9
+            :yield-stress-pa 160.0e6 :hardening-pa 1.0e9 :density-kg-m3 2700.0}
+   :sweep {:param :max-force-n :values [4000.0 8000.0 12000.0 16000.0 20000.0]}
+   :quantity :final-strain
+   :limit {:max 0.002 :basis "estimate: keep the conductor elastic -- hard-drawn aluminium wire assumed to yield near 160 MPa (~0.0023 strain at 69 GPa); the conductor standard's rated strength is the source to cite"}
+   :boundary {:lo 1000.0 :hi 30000.0}}]}
