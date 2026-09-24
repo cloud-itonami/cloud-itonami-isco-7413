@@ -1,5 +1,5 @@
 (ns linecoord.governor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [linecoord.store :as store]
             [linecoord.advisor :as advisor]
             [linecoord.governor :as governor]))

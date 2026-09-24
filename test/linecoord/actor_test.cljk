@@ -1,5 +1,5 @@
 (ns linecoord.actor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [linecoord.actor :as actor]
             [linecoord.store :as store]))
 
