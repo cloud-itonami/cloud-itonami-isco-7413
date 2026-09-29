@@ -1,7 +1,7 @@
 (ns linecoord.store
   "SSoT for the ISCO-08 7413 electrical line installers and repairers
   crew dispatch scheduling/logistics coordination actor (itonami
-  actor pattern, ADR-2607121000 / CLAUDE.md Actors section; README's
+  actor pattern, ADR-2607121000 / AGENTS.md Actors section; README's
   'Robotics premise' — a crew dispatch scheduling/logistics
   coordination robot proposes crew/dispatch scheduling, service-record
   logging, safety-concern flags and line/pole-materials order
